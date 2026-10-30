@@ -233,7 +233,27 @@ footer {
 }
 </style>
 """, unsafe_allow_html=True)
+/* Sidebar text visibility */
+[data-testid="stSidebar"] {
+    background-color: #f3f6fc;
+}
 
+[data-testid="stSidebar"] * {
+    color: #1e293b !important;
+}
+
+/* Main dashboard headings */
+[data-testid="stAppViewContainer"] h1,
+[data-testid="stAppViewContainer"] h2,
+[data-testid="stAppViewContainer"] h3 {
+    color: #ffffff !important;
+}
+
+/* Main dashboard text */
+[data-testid="stAppViewContainer"] p,
+[data-testid="stAppViewContainer"] label {
+    color: #e2e8f0;
+}
 
 def github_get(url, allow_not_found=False):
     headers = {
