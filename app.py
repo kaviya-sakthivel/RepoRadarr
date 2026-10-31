@@ -1,1484 +1,1371 @@
-import os
-import json
+
 import base64
+import json
 import re
-from datetime import date, timedelta
+from datetime import datetime, timedelta, timezone
 from io import BytesIO
+from urllib.parse import urlparse
 
 import pandas as pd
+import plotly.express as px
 import requests
 import streamlit as st
 
-from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-)
 
-from reporadar_utils import parse_repo_url
-
+# =========================================================
+# 1. PAGE CONFIGURATION
+# =========================================================
 
 st.set_page_config(
-    page_title="RepoRadar",
-    page_icon="🔍",
+    page_title="RepoRadar | GitHub Intelligence",
+    page_icon="🛰️",
     layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-try:
-    GITHUB_TOKEN = st.secrets.get(
-        "REPO_RADAR_TOKEN",
-        os.getenv("REPO_RADAR_TOKEN")
-    )
-except Exception:
-    GITHUB_TOKEN = os.getenv("REPO_RADAR_TOKEN")
 
-# ---------------- PREMIUM UI DESIGN ----------------
+# =========================================================
+# 2. CUSTOM UI
+# =========================================================
 
 st.markdown("""
 <style>
-:root {
-    --rr-bg: #08111f;
-    --rr-panel: #111e31;
-    --rr-panel-2: #15243a;
-    --rr-border: #263a55;
-    --rr-text: #edf4ff;
-    --rr-muted: #9aacc4;
-    --rr-blue: #60a5fa;
-    --rr-teal: #2dd4bf;
-}
+    .stApp {
+        background-color: #0b1120;
+        color: #e5e7eb;
+    }
 
-.stApp {
-    background: radial-gradient(circle at 12% 0%, #142b49 0, transparent 32%),
-                linear-gradient(135deg, #08111f 0%, #0b1627 55%, #101d30 100%);
-    color: var(--rr-text);
-}
+    [data-testid="stSidebar"] {
+        background-color: #111827;
+        border-right: 1px solid #263449;
+    }
 
-.block-container {
-    max-width: 1440px;
-    padding: 2.2rem 2.2rem 3.5rem;
-}
-
-h1, h2, h3, h4 {
-    color: var(--rr-text) !important;
-    letter-spacing: -0.025em;
-}
-
-h1 {
-    font-size: 2.55rem !important;
-    font-weight: 800 !important;
-}
-
-h2 {
-    font-size: 1.55rem !important;
-    font-weight: 750 !important;
-    margin-top: 1.4rem !important;
-}
-
-h3 {
-    font-size: 1.12rem !important;
-    font-weight: 700 !important;
-}
-
-p, label, [data-testid="stMarkdownContainer"] {
-    color: #d5e1f0;
-}
-
-[data-testid="stCaptionContainer"] {
-    color: var(--rr-muted) !important;
-}
-
-[data-testid="stVerticalBlockBorderWrapper"] {
-    border-color: var(--rr-border) !important;
-    border-radius: 16px !important;
-}
-
-hr {
-    border-color: #263a55 !important;
-    margin: 1.7rem 0 !important;
-}
-
-[data-testid="stMetric"] {
-    background: linear-gradient(145deg, #172941 0%, #101d30 100%);
-    border: 1px solid var(--rr-border);
-    border-radius: 16px;
-    padding: 18px 20px;
-    min-height: 112px;
-    box-shadow: 0 8px 24px rgba(0,0,0,.16);
-    transition: transform .18s ease, border-color .18s ease;
-}
-
-[data-testid="stMetric"]:hover {
-    transform: translateY(-2px);
-    border-color: #4775a8;
-}
-
-[data-testid="stMetricLabel"] {
-    color: var(--rr-muted) !important;
-    font-size: .88rem !important;
-}
-
-[data-testid="stMetricValue"] {
-    color: var(--rr-blue) !important;
-    font-size: 1.85rem !important;
-    font-weight: 800 !important;
-}
-
-[data-testid="stMetricDelta"] {
-    font-size: .8rem !important;
-}
-
-.stTextInput input,
-.stTextArea textarea,
-.stSelectbox [data-baseweb="select"] > div {
-    background: #101d30 !important;
-    color: var(--rr-text) !important;
-    border: 1px solid #344c6b !important;
-    border-radius: 11px !important;
-}
-
-.stTextInput input:focus,
-.stTextArea textarea:focus {
-    border-color: var(--rr-blue) !important;
-    box-shadow: 0 0 0 2px rgba(96,165,250,.18) !important;
-}
-
-.stButton button,
-.stDownloadButton button {
-    min-height: 44px;
-    border-radius: 11px;
-    font-weight: 700;
-    border: 1px solid #3b82f6;
-    transition: transform .18s ease, box-shadow .18s ease;
-}
-
-.stButton button[kind="primary"] {
-    color: white !important;
-    border: 0 !important;
-    background: linear-gradient(100deg, #2563eb, #0f9f9a) !important;
-    box-shadow: 0 7px 20px rgba(37,99,235,.2);
-}
-
-.stButton button:hover,
-.stDownloadButton button:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 7px 18px rgba(37,99,235,.16);
-}
-
-.stProgress > div > div > div {
-    background: linear-gradient(90deg, #3b82f6, #2dd4bf);
-    border-radius: 20px;
-}
-
-[data-testid="stAlert"] {
-    border-radius: 13px;
-    border: 1px solid var(--rr-border);
-}
-
-[data-testid="stExpander"] {
-    background: rgba(17,30,49,.78);
-    border: 1px solid var(--rr-border);
-    border-radius: 13px;
-}
-
-[data-testid="stExpander"] summary {
-    color: var(--rr-text) !important;
-    font-weight: 650;
-}
-
-[data-testid="stPlotlyChart"],
-[data-testid="stVegaLiteChart"],
-[data-testid="stArrowVegaLiteChart"],
-[data-testid="stDataFrame"] {
-    background: rgba(17,30,49,.72);
-    border: 1px solid var(--rr-border);
-    border-radius: 14px;
-    padding: 8px;
-}
-
-[data-testid="stDataFrame"] {
-    overflow: hidden;
-}
-
-[data-testid="stSidebar"] {
-    background: #0a1423;
-    border-right: 1px solid var(--rr-border);
-}
-
-footer {
-    visibility: hidden;
-}
-
-@media (max-width: 768px) {
     .block-container {
-        padding: 1.1rem .9rem 2rem;
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+        max-width: 1450px;
     }
 
-    h1 {
-        font-size: 2rem !important;
+    h1, h2, h3 {
+        color: #f8fafc !important;
     }
 
-    h2 {
-        font-size: 1.3rem !important;
+    p, label, li {
+        color: #cbd5e1;
     }
 
-    [data-testid="stMetric"] {
-        padding: 14px;
-        min-height: 96px;
+    div[data-testid="stMetric"] {
+        background: #151f31;
+        border: 1px solid #263449;
+        padding: 16px;
+        border-radius: 12px;
     }
-}
+
+    div[data-testid="stMetricLabel"] {
+        color: #94a3b8;
+    }
+
+    div[data-testid="stMetricValue"] {
+        color: #f8fafc;
+    }
+
+    div.stButton > button {
+        background: #2563eb;
+        color: white;
+        border: none;
+        border-radius: 9px;
+        font-weight: 600;
+        min-height: 42px;
+    }
+
+    div.stButton > button:hover {
+        background: #1d4ed8;
+        color: white;
+    }
+
+    .hero {
+        background: linear-gradient(120deg, #172554, #172033);
+        border: 1px solid #30456c;
+        border-radius: 16px;
+        padding: 25px;
+        margin-bottom: 25px;
+    }
+
+    .hero-title {
+        font-size: 32px;
+        font-weight: 800;
+        color: #ffffff;
+    }
+
+    .hero-subtitle {
+        color: #bfdbfe;
+        font-size: 15px;
+    }
+
+    .section-card {
+        background: #151f31;
+        border: 1px solid #263449;
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 12px;
+    }
+
+    .muted {
+        color: #94a3b8;
+        font-size: 13px;
+    }
+
+    #MainMenu {
+        visibility: hidden;
+    }
+
+    footer {
+        visibility: hidden;
+    }
 </style>
 """, unsafe_allow_html=True)
-/* Sidebar text visibility */
-[data-testid="stSidebar"] {
-    background-color: #f3f6fc;
-}
 
-[data-testid="stSidebar"] * {
-    color: #1e293b !important;
-}
 
-/* Main dashboard headings */
-[data-testid="stAppViewContainer"] h1,
-[data-testid="stAppViewContainer"] h2,
-[data-testid="stAppViewContainer"] h3 {
-    color: #ffffff !important;
-}
+# =========================================================
+# 3. GITHUB API
+# =========================================================
 
-/* Main dashboard text */
-[data-testid="stAppViewContainer"] p,
-[data-testid="stAppViewContainer"] label {
-    color: #e2e8f0;
-}
+API_BASE = "https://api.github.com"
 
-def github_get(url, allow_not_found=False):
-    headers = {
+
+def get_token_from_secrets():
+    try:
+        return st.secrets.get("REPO_RADAR_TOKEN", "")
+    except Exception:
+        return ""
+
+
+def create_github_session(token=""):
+    session = requests.Session()
+
+    session.headers.update({
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-    }
+        "User-Agent": "RepoRadar-Application"
+    })
 
-    if GITHUB_TOKEN:
-        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    if token:
+        session.headers["Authorization"] = f"Bearer {token}"
 
-    response = requests.get(
-        url,
-        headers=headers,
-        timeout=15,
-    )
+    return session
 
-    if response.status_code == 404 and allow_not_found:
-        return None
 
-    if response.status_code == 401:
-        raise ValueError("GitHub token is invalid or expired.")
-
-    if response.status_code == 403:
-        raise ValueError(
-            "GitHub API access denied or rate limit reached. "
-            "Please try again later."
+def github_get(session, endpoint, params=None, allow_404=False):
+    try:
+        response = session.get(
+            API_BASE + endpoint,
+            params=params,
+            timeout=25
+        )
+    except requests.RequestException as error:
+        raise RuntimeError(
+            f"Unable to connect to GitHub: {error}"
         )
 
+    if allow_404 and response.status_code == 404:
+        return None
+
+    if response.status_code == 403:
+        if response.headers.get("X-RateLimit-Remaining") == "0":
+            raise RuntimeError(
+                "GitHub API rate limit reached. Add a GitHub token "
+                "in the sidebar or Streamlit secrets."
+            )
+
     if response.status_code == 404:
-        raise ValueError("Repository or GitHub resource not found.")
+        raise RuntimeError(
+            "Repository not found or inaccessible. "
+            "Check the URL and make sure the repository is public."
+        )
 
-    response.raise_for_status()
+    if not response.ok:
+        try:
+            message = response.json().get(
+                "message",
+                response.text
+            )
+        except ValueError:
+            message = response.text
 
-    if response.status_code == 204:
-        return []
+        raise RuntimeError(
+            f"GitHub API error {response.status_code}: {message}"
+        )
 
     return response.json()
 
 
-def analyze_readme(readme_response):
-    if not readme_response:
-        return {
-            "exists": False,
-            "word_count": 0,
-            "sections": [],
-            "score": 0,
-            "checks": {
-                "README exists": False,
-                "Good documentation length": False,
-                "Features section": False,
-                "Installation instructions": False,
-                "Usage examples": False,
-                "Screenshots or demo": False,
-                "Structured headings": False,
-            },
-            "suggestions": [
-                "Create a README.md file."
-            ],
-        }
+# =========================================================
+# 4. REPOSITORY URL VALIDATION
+# =========================================================
 
-    try:
-        content = base64.b64decode(
-            readme_response["content"]
-        ).decode("utf-8", errors="replace")
+def parse_repository_url(value):
+    value = (value or "").strip()
 
-    except (KeyError, ValueError):
-        content = ""
+    if not value:
+        raise ValueError("Please enter a GitHub repository URL.")
 
-    word_count = len(
-        re.findall(r"\b[\w'-]+\b", content)
-    )
+    if "://" not in value:
+        value = "https://" + value
 
-    headings = re.findall(
-        r"(?m)^#{1,6}\s+(.+)$",
-        content,
-    )
+    parsed = urlparse(value)
 
-    lower_content = content.lower()
+    if parsed.netloc.lower() not in (
+        "github.com",
+        "www.github.com"
+    ):
+        raise ValueError("Please enter a valid GitHub URL.")
 
-    features_present = bool(
-        re.search(
-            r"(?im)^#{1,6}\s+.*feature",
-            content,
-        )
-    )
+    parts = [
+        part for part in parsed.path.strip("/").split("/")
+        if part
+    ]
 
-    installation_present = any(
-        term in lower_content
-        for term in [
-            "installation",
-            "getting started",
-            "how to install",
-            "pip install",
-            "npm install",
-            "setup",
-        ]
-    )
-
-    usage_present = any(
-        term in lower_content
-        for term in [
-            "usage",
-            "how to use",
-            "example",
-            "quick start",
-        ]
-    )
-
-    screenshots_present = any(
-        term in lower_content
-        for term in [
-            "screenshot",
-            "screenshots",
-            "demo",
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".gif",
-        ]
-    )
-
-    length_good = word_count >= 150
-    structured = len(headings) >= 3
-
-    checks = {
-        "README exists": True,
-        "Good documentation length": length_good,
-        "Features section": features_present,
-        "Installation instructions": installation_present,
-        "Usage examples": usage_present,
-        "Screenshots or demo": screenshots_present,
-        "Structured headings": structured,
-    }
-
-    score = 20
-
-    if length_good:
-        score += 20
-
-    if features_present:
-        score += 15
-
-    if installation_present:
-        score += 15
-
-    if usage_present:
-        score += 15
-
-    if screenshots_present:
-        score += 10
-
-    if structured:
-        score += 5
-
-    suggestions = []
-
-    if not length_good:
-        suggestions.append(
-            "Expand your README with more project details."
+    if len(parts) != 2:
+        raise ValueError(
+            "Use this format: https://github.com/owner/repository"
         )
 
-    if not features_present:
-        suggestions.append(
-            "Add a Features section explaining the main capabilities."
-        )
+    owner, repo = parts
 
-    if not installation_present:
-        suggestions.append(
-            "Add installation and setup instructions."
-        )
+    if repo.endswith(".git"):
+        repo = repo[:-4]
 
-    if not usage_present:
-        suggestions.append(
-            "Add usage instructions and code examples."
-        )
+    pattern = r"^[A-Za-z0-9_.-]+$"
 
-    if not screenshots_present:
-        suggestions.append(
-            "Add screenshots or a demo link."
-        )
+    if not re.fullmatch(pattern, owner):
+        raise ValueError("Invalid GitHub owner name.")
 
-    if not structured:
-        suggestions.append(
-            "Organize your README using at least three headings."
-        )
+    if not re.fullmatch(pattern, repo):
+        raise ValueError("Invalid repository name.")
 
-    return {
-        "exists": True,
-        "word_count": word_count,
-        "sections": headings,
-        "score": score,
-        "checks": checks,
-        "suggestions": suggestions,
-    }
+    return owner, repo
 
+
+# =========================================================
+# 5. GRADING SYSTEM
+# =========================================================
 
 def get_grade(score):
     if score >= 85:
         return "A"
-
-    if score >= 70:
+    elif score >= 70:
         return "B"
-
-    if score >= 50:
+    elif score >= 50:
         return "C"
-
-    if score >= 35:
+    elif score >= 35:
         return "D"
-
     return "F"
 
 
-def analyze_project_structure(base_url, default_branch):
-    """Inspect repository files and identify project technologies."""
+# =========================================================
+# 6. README QUALITY ANALYZER
+# =========================================================
+
+def analyze_readme(readme):
+    checks = [
+        (
+            "Project title",
+            bool(re.search(r"(?m)^#\s+\S", readme)),
+            "Add a clear project title."
+        ),
+        (
+            "Project description",
+            len(readme.strip()) >= 100,
+            "Explain what your project does."
+        ),
+        (
+            "Installation instructions",
+            bool(re.search(
+                r"(?i)installation|install|setup|getting started",
+                readme
+            )),
+            "Add installation instructions."
+        ),
+        (
+            "Usage instructions",
+            bool(re.search(
+                r"(?i)usage|how to use|quick start",
+                readme
+            )),
+            "Explain how to run the project."
+        ),
+        (
+            "Code examples",
+            "```" in readme or bool(
+                re.search(r"`[^`]+`", readme)
+            ),
+            "Add code or command examples."
+        ),
+        (
+            "Organized sections",
+            len(re.findall(r"(?m)^#{1,3}\s+", readme)) >= 3,
+            "Organize the README with headings."
+        ),
+        (
+            "Contribution guidelines",
+            bool(re.search(r"(?i)contribut", readme)),
+            "Explain how others can contribute."
+        ),
+        (
+            "License information",
+            bool(re.search(r"(?i)licen[cs]e", readme)),
+            "Mention the project license."
+        ),
+        (
+            "Contact information",
+            bool(re.search(
+                r"(?i)contact|support|maintainer|author",
+                readme
+            )),
+            "Add maintainer or contact information."
+        ),
+        (
+            "Images or screenshots",
+            bool(re.search(r"!\[[^\]]*\]\([^)]+\)", readme)),
+            "Consider adding screenshots."
+        )
+    ]
+
+    passed = sum(
+        1 for _, status, _ in checks if status
+    )
+
+    score = round(
+        passed / len(checks) * 100
+    )
+
+    results = []
+
+    suggestions = []
+
+    for label, status, suggestion in checks:
+        results.append({
+            "Check": label,
+            "Passed": status,
+            "Status": "Passed" if status else "Missing",
+            "Suggestion": "Present" if status else suggestion
+        })
+
+        if not status:
+            suggestions.append(suggestion)
+
+    return score, results, suggestions
+
+
+# =========================================================
+# 7. REPOSITORY HEALTH ANALYZER
+# =========================================================
+
+def analyze_health(metadata, readme, tree, commits, contributors):
+
+    checks = [
+        (
+            "README available",
+            bool(readme),
+            "Add a README.md file."
+        ),
+        (
+            "Repository description",
+            bool(metadata.get("description")),
+            "Add a repository description."
+        ),
+        (
+            "License available",
+            bool(metadata.get("license")),
+            "Add a license if appropriate."
+        ),
+        (
+            "Repository updated",
+            bool(metadata.get("pushed_at")),
+            "Maintain your repository."
+        ),
+        (
+            "Tests directory",
+            any(
+                item.get("type") == "tree"
+                and item.get("path", "").split("/")[-1].lower()
+                in ("test", "tests")
+                for item in tree
+            ),
+            "Consider adding a tests directory."
+        ),
+        (
+            "Multiple contributors",
+            len(contributors) > 1,
+            "Consider collaboration and contribution guidelines."
+        ),
+        (
+            "Commit history",
+            len(commits) > 0,
+            "Add meaningful commits."
+        ),
+        (
+            "GitHub topics",
+            bool(metadata.get("topics")),
+            "Add relevant GitHub topics."
+        ),
+        (
+            "Default branch",
+            bool(metadata.get("default_branch")),
+            "Configure a default branch."
+        ),
+        (
+            "Repository not archived",
+            not metadata.get("archived", False),
+            "This repository is archived."
+        )
+    ]
+
+    passed = sum(
+        1 for _, status, _ in checks if status
+    )
+
+    score = round(
+        passed / len(checks) * 100
+    )
+
+    results = []
+
+    for label, status, suggestion in checks:
+        results.append({
+            "Check": label,
+            "Passed": status,
+            "Status": "Passed" if status else "Needs attention",
+            "Suggestion": "Detected" if status else suggestion
+        })
+
+    return score, results
+
+
+# =========================================================
+# 8. COMPLETE REPOSITORY ANALYSIS
+# =========================================================
+
+def analyze_repository(owner, repo, token):
+
+    session = create_github_session(token)
+
+    base = f"/repos/{owner}/{repo}"
+
+    metadata = github_get(session, base)
+
+    # README
+    readme_data = github_get(
+        session,
+        base + "/readme",
+        allow_404=True
+    )
+
+    readme_text = ""
+
+    if readme_data and readme_data.get("content"):
+        try:
+            readme_text = base64.b64decode(
+                readme_data["content"]
+            ).decode("utf-8", errors="replace")
+        except Exception:
+            readme_text = ""
+
+    # Languages
+    languages = github_get(
+        session,
+        base + "/languages"
+    ) or {}
+
+    # Contributors
+    contributors = github_get(
+        session,
+        base + "/contributors",
+        params={"per_page": 30}
+    ) or []
+
+    # Open issues (exclude pull requests)
+    issues_raw = github_get(
+        session,
+        base + "/issues",
+        params={
+            "state": "open",
+            "per_page": 30,
+            "sort": "created",
+            "direction": "desc"
+        }
+    ) or []
+
+    issues = [
+        item for item in issues_raw
+        if "pull_request" not in item
+    ]
+
+    # Latest commits
+    commits = github_get(
+        session,
+        base + "/commits",
+        params={"per_page": 100}
+    ) or []
+
+    # Recent commit count from the latest 100 returned commits
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+
+    recent_commits = 0
+
+    for item in commits:
+        date_text = (
+            item.get("commit", {})
+            .get("author", {})
+            .get("date")
+        )
+
+        if date_text:
+            try:
+                commit_date = datetime.fromisoformat(
+                    date_text.replace("Z", "+00:00")
+                )
+
+                if commit_date >= cutoff:
+                    recent_commits += 1
+
+            except ValueError:
+                pass
+
+    # Project tree
+    branch = metadata.get("default_branch") or "main"
 
     tree_data = github_get(
-        f"{base_url}/git/trees/{default_branch}?recursive=1"
+        session,
+        f"{base}/git/trees/{branch}",
+        params={"recursive": "1"},
+        allow_404=True
+    ) or {}
+
+    tree = tree_data.get("tree", [])
+
+    # Scores
+    health_score, health_checks = analyze_health(
+        metadata,
+        readme_text,
+        tree,
+        commits,
+        contributors
     )
 
-    tree = (
-        tree_data.get("tree", [])
-        if isinstance(tree_data, dict)
-        else []
+    readme_score, readme_checks, suggestions = analyze_readme(
+        readme_text
     )
-
-    files = [
-        item.get("path", "")
-        for item in tree
-        if item.get("type") == "blob"
-    ]
-
-    directories = sorted({
-        path.rsplit("/", 1)[0]
-        for path in files
-        if "/" in path
-    })
-
-    root_files = {
-        path.lower().split("/")[-1]
-        for path in files
-        if "/" not in path
-    }
-
-    manifests = {
-        "Python": [
-            "requirements.txt",
-            "pyproject.toml",
-            "pipfile",
-            "setup.py",
-        ],
-        "JavaScript": [
-            "package.json",
-            "package-lock.json",
-            "yarn.lock",
-        ],
-        "Java": [
-            "pom.xml",
-            "build.gradle",
-            "gradlew",
-        ],
-        "C/C++": [
-            "makefile",
-            "cmakelists.txt",
-        ],
-        "Ruby": ["gemfile"],
-        "PHP": ["composer.json"],
-        "Go": ["go.mod"],
-        "Rust": ["cargo.toml"],
-    }
-
-    detected = [
-        language
-        for language, names in manifests.items()
-        if any(name in root_files for name in names)
-    ]
-
-    important = {
-        "README": any(
-            name.startswith("readme")
-            for name in root_files
-        ),
-        "License": any(
-            name.startswith("license")
-            for name in root_files
-        ),
-        ".gitignore": ".gitignore" in root_files,
-        "Dependency manifest": any(
-            name in root_files
-            for names in manifests.values()
-            for name in names
-        ),
-        "Tests folder": any(
-            path.lower().split("/")[0] in {"test", "tests"}
-            for path in files
-        ),
-        "Dockerfile": "dockerfile" in root_files,
-        "CI workflow": any(
-            path.startswith(".github/workflows/")
-            for path in files
-        ),
-    }
-
-    return {
-        "file_count": len(files),
-        "directory_count": len(directories),
-        "directories": directories[:40],
-        "files": files[:100],
-        "detected_project_types": detected,
-        "important_files": important,
-        "truncated": len(files) > 100,
-    }
-
-
-def analyze_repository(repo_url):
-    owner, repo = parse_repo_url(repo_url)
-
-    base_url = (
-        f"https://api.github.com/repos/{owner}/{repo}"
-    )
-
-    metadata = github_get(base_url)
-
-    project_structure = analyze_project_structure(
-        base_url,
-        metadata.get("default_branch", "main"),
-    )
-    contents = github_get(
-        base_url + "/contents"
-    )
-
-    languages = github_get(
-        base_url + "/languages"
-    )
-
-    commits = github_get(
-        base_url + "/commits?per_page=100"
-    )
-
-    contributors = github_get(
-        base_url + "/contributors?per_page=100"
-    )
-
-    issues = github_get(
-        base_url + "/issues?state=all&per_page=100"
-    )
-
-    readme_response = github_get(
-        base_url + "/readme",
-        allow_not_found=True,
-    )
-
-    readme_analysis = analyze_readme(
-        readme_response
-    )
-
-    root_names = [
-        item.get("name", "").lower()
-        for item in contents
-    ]
-
-    readme_present = any(
-        name.startswith("readme")
-        for name in root_names
-    )
-
-    license_present = any(
-        name.startswith("license")
-        for name in root_names
-    )
-
-    tests_present = any(
-        name in ["tests", "test"]
-        for name in root_names
-    )
-
-    description_present = bool(
-        metadata.get("description")
-    )
-
-    language_present = bool(languages)
-
-    archived = metadata.get("archived", False)
-
-    checks = {
-        "README present": readme_present,
-        "License present": license_present,
-        "Test directory indicator": tests_present,
-        "Description present": description_present,
-        "Languages detected": language_present,
-        "Repository not archived": not archived,
-    }
-
-    health_score = int(
-        sum(checks.values()) / len(checks) * 100
-    )
-
-    # Commit activity analysis
-
-    today = date.today()
-    start_date = today - timedelta(days=29)
-
-    activity = {
-        (start_date + timedelta(days=i)).isoformat(): 0
-        for i in range(30)
-    }
-
-    for commit in commits:
-        commit_data = commit.get("commit", {})
-
-        author_data = (
-            commit_data.get("committer")
-            or commit_data.get("author")
-            or {}
-        )
-
-        commit_date = author_data.get("date")
-
-        if commit_date and commit_date[:10] in activity:
-            activity[commit_date[:10]] += 1
-
-    recent_commit_count = sum(
-        activity.values()
-    )
-
-    # Contributor analysis
-
-    contributor_data = []
-
-    if isinstance(contributors, list):
-        for contributor in contributors:
-
-            if contributor.get("type") == "Bot":
-                continue
-
-            contributor_data.append({
-                "Username": contributor.get(
-                    "login", "Unknown"
-                ),
-                "Contributions": contributor.get(
-                    "contributions", 0
-                ),
-                "Profile": contributor.get(
-                    "html_url", ""
-                ),
-            })
-
-    contributor_data.sort(
-        key=lambda x: x["Contributions"],
-        reverse=True,
-    )
-
-    # Issue analytics
-
-    actual_issues = [
-        issue
-        for issue in issues
-        if "pull_request" not in issue
-    ]
-
-    open_issues = sum(
-        1
-        for issue in actual_issues
-        if issue.get("state") == "open"
-    )
-
-    closed_issues = sum(
-        1
-        for issue in actual_issues
-        if issue.get("state") == "closed"
-    )
-
-    # Latest commit
-
-    latest_commit_date = None
-
-    if commits:
-        latest_commit = commits[0].get("commit", {})
-
-        latest_author = (
-            latest_commit.get("committer")
-            or latest_commit.get("author")
-            or {}
-        )
-
-        latest_commit_date = latest_author.get("date")
-
-    # Combined score
 
     overall_score = round(
-        health_score * 0.60
-        + readme_analysis["score"] * 0.40
+        health_score * 0.60 +
+        readme_score * 0.40
     )
 
-    report = {
-        "repository": metadata.get("full_name"),
-        "description": metadata.get("description"),
-        "url": metadata.get("html_url"),
-        "stars": metadata.get("stargazers_count", 0),
-        "forks": metadata.get("forks_count", 0),
-        "open_issues": metadata.get("open_issues_count", 0),
-        "default_branch": metadata.get("default_branch"),
-        "created_at": metadata.get("created_at"),
-        "updated_at": metadata.get("updated_at"),
-        "archived": archived,
+    return {
+        "metadata": metadata,
         "languages": languages,
-        "readme_present": readme_present,
-        "license_present": license_present,
-        "tests_present": tests_present,
-        "latest_commit_date": latest_commit_date,
-        "commit_activity": activity,
-        "recent_commit_count": recent_commit_count,
-        "commits_fetched": len(commits),
-        "checks": checks,
-        "score": health_score,
+        "contributors": contributors,
+        "issues": issues,
+        "commits": commits,
+        "recent_commits": recent_commits,
+        "health_score": health_score,
+        "health_checks": health_checks,
+        "readme_score": readme_score,
+        "readme_checks": readme_checks,
+        "readme_suggestions": suggestions,
+        "readme_text": readme_text,
         "overall_score": overall_score,
-        "grade": get_grade(overall_score),
-        "contributors": contributor_data,
-        "contributors_fetched": len(contributor_data),
-        "issues_analyzed": len(actual_issues),
-        "open_issues_analyzed": open_issues,
-        "closed_issues_analyzed": closed_issues,
-        "readme_analysis": readme_analysis,
-        "project_structure": project_structure,
+        "tree": tree,
+        "tree_truncated": tree_data.get("truncated", False),
+        "generated_at": datetime.now(timezone.utc).isoformat()
     }
 
-    return report
 
+# =========================================================
+# 9. PDF REPORT
+# =========================================================
 
-def create_pdf_report(report):
+def create_pdf_report(data):
+
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import (
+        SimpleDocTemplate,
+        Paragraph,
+        Spacer,
+        Table,
+        TableStyle
+    )
+
     buffer = BytesIO()
 
-    doc = SimpleDocTemplate(
+    document = SimpleDocTemplate(
         buffer,
-        pagesize=letter,
-        rightMargin=42,
-        leftMargin=42,
-        topMargin=42,
-        bottomMargin=42,
+        pagesize=letter
     )
 
     styles = getSampleStyleSheet()
 
+    metadata = data["metadata"]
+
     story = [
-        Paragraph(
-            "RepoRadar - Repository Analysis Report",
-            styles["Title"],
-        ),
+        Paragraph("RepoRadar Analysis Report", styles["Title"]),
         Spacer(1, 12),
         Paragraph(
-            report["repository"],
-            styles["Heading2"],
+            metadata.get("full_name", "Repository"),
+            styles["Heading2"]
         ),
         Paragraph(
-            report.get("description")
-            or "No repository description provided.",
-            styles["BodyText"],
+            metadata.get("description") or "No description available.",
+            styles["BodyText"]
         ),
-        Spacer(1, 12),
+        Spacer(1, 15),
+        Paragraph(
+            f"Overall Score: {data['overall_score']}/100 "
+            f"(Grade {get_grade(data['overall_score'])})",
+            styles["Heading2"]
+        ),
+        Paragraph(
+            f"Repository Health: {data['health_score']}/100",
+            styles["BodyText"]
+        ),
+        Paragraph(
+            f"README Quality: {data['readme_score']}/100",
+            styles["BodyText"]
+        ),
+        Spacer(1, 15),
+        Paragraph("Repository Health Checklist", styles["Heading2"])
     ]
 
-    summary_data = [
-        ["Overall Score", f'{report["overall_score"]}/100'],
-        ["Grade", report["grade"]],
-        ["Repository Health", f'{report["score"]}/100'],
-        [
-            "README Quality",
-            f'{report["readme_analysis"]["score"]}/100',
-        ],
-        ["Stars", str(report["stars"])],
-        ["Forks", str(report["forks"])],
-        [
-            "Commits (last 30 days)",
-            str(report["recent_commit_count"]),
-        ],
-        [
-            "Contributors",
-            str(report["contributors_fetched"]),
-        ],
-        [
-            "Issues analyzed",
-            str(report["issues_analyzed"]),
-        ],
+    table_data = [
+        ["Check", "Status", "Suggestion"]
     ]
+
+    for item in data["health_checks"]:
+        table_data.append([
+            item["Check"],
+            item["Status"],
+            item["Suggestion"]
+        ])
 
     table = Table(
-        summary_data,
-        colWidths=[220, 230],
+        table_data,
+        colWidths=[130, 90, 285],
+        repeatRows=1
     )
 
-    table.setStyle(
-        TableStyle([
-            (
-                "BACKGROUND",
-                (0, 0),
-                (-1, 0),
-                colors.HexColor("#17365D"),
-            ),
-            (
-                "TEXTCOLOR",
-                (0, 0),
-                (-1, 0),
-                colors.white,
-            ),
-            (
-                "BACKGROUND",
-                (0, 0),
-                (0, -1),
-                colors.HexColor("#EAF0F6"),
-            ),
-            (
-                "GRID",
-                (0, 0),
-                (-1, -1),
-                0.5,
-                colors.grey,
-            ),
-            (
-                "PADDING",
-                (0, 0),
-                (-1, -1),
-                7,
-            ),
-        ])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e3a8a")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("PADDING", (0, 0), (-1, -1), 5)
+    ]))
+
+    story.append(table)
+    story.append(Spacer(1, 15))
+
+    story.append(
+        Paragraph("README Improvement Suggestions", styles["Heading2"])
     )
 
-    story += [
-        table,
-        Spacer(1, 16),
-        Paragraph(
-            "Repository Health Checks",
-            styles["Heading2"],
-        ),
-    ]
-
-    for label, passed in report["checks"].items():
-        status = "PASS" if passed else "NEEDS ATTENTION"
-
-        story.append(
-            Paragraph(
-                f"{status} - {label}",
-                styles["BodyText"],
+    if data["readme_suggestions"]:
+        for suggestion in data["readme_suggestions"]:
+            story.append(
+                Paragraph("• " + suggestion, styles["BodyText"])
             )
+    else:
+        story.append(
+            Paragraph("No missing README checks detected.", styles["BodyText"])
         )
 
-    story += [
-        Spacer(1, 12),
-        Paragraph(
-            "README Improvement Suggestions",
-            styles["Heading2"],
-        ),
-    ]
-
-    suggestions = (
-        report["readme_analysis"]["suggestions"]
-        or ["No README suggestions."]
-    )
-
-    for item in suggestions:
-        story.append(
-            Paragraph(
-                f"- {item}",
-                styles["BodyText"],
-            )
-        )
-
-    story += [
-        Spacer(1, 16),
-        Paragraph(
-            "Scoring note",
-            styles["Heading2"],
-        ),
-        Paragraph(
-            "Overall score = 60% repository health score "
-            "+ 40% README quality score. Both component "
-            "scores are heuristic checks created by RepoRadar "
-            "and are not an industry-standard certification. "
-            "GitHub activity and issue counts are based on "
-            "the API results available during this analysis.",
-            styles["BodyText"],
-        ),
-    ]
-
-    doc.build(story)
-
-    buffer.seek(0)
+    document.build(story)
 
     return buffer.getvalue()
 
 
-# ---------------- STREAMLIT UI ----------------
+# =========================================================
+# 10. SIDEBAR
+# =========================================================
 
+with st.sidebar:
 
-# ---------------- STREAMLIT DASHBOARD UI ----------------
+    st.markdown("## 🛰️ RepoRadar")
+    st.caption("GitHub Repository Intelligence")
 
-st.markdown("""
-<style>
-    .block-container {
-        padding-top: 2rem;
-        padding-bottom: 2rem;
-    }
-    [data-testid="stSidebar"] {
-        background-color: #f5f7fb;
-    }
-    .dashboard-title {
-        font-size: 32px;
-        font-weight: 750;
-        color: #172554;
-    }
-    .dashboard-subtitle {
-        color: #64748b;
-        font-size: 15px;
-    }
-</style>
-""", unsafe_allow_html=True)
+    st.divider()
 
-# Sidebar navigation
-st.sidebar.title("🔍 RepoRadar")
-st.sidebar.caption("GitHub Repository Intelligence")
-
-page = st.sidebar.radio(
-    "NAVIGATION",
-    [
-        "Overview",
-        "Repository Health",
-        "Activity",
-        "README Analyzer",
-        "Project Structure",
-        "Reports"
-    ]
-)
-
-st.sidebar.divider()
-st.sidebar.caption("Built with Python & Streamlit")
-
-# Main heading
-st.markdown(
-    '<div class="dashboard-title">RepoRadar Dashboard</div>',
-    unsafe_allow_html=True
-)
-st.markdown(
-    '<div class="dashboard-subtitle">'
-    'Analyze repository quality, activity and documentation.'
-    '</div>',
-    unsafe_allow_html=True
-)
-
-st.write("")
-
-if not GITHUB_TOKEN:
-    st.sidebar.warning(
-        "GitHub token not configured. "
-        "Unauthenticated API limits may apply."
-    )
-
-# Repository input
-with st.form("repository_form"):
-    repo_url = st.text_input(
+    repository_url = st.text_input(
         "GitHub Repository URL",
-        placeholder="https://github.com/username/repository"
+        placeholder="https://github.com/owner/repository"
     )
 
-    analyze_button = st.form_submit_button(
-        "🚀 Analyze Repository",
+    github_token = st.text_input(
+        "GitHub Token (Optional)",
+        value=get_token_from_secrets(),
+        type="password",
+        help="A token increases the GitHub API rate limit."
+    )
+
+    analyze_button = st.button(
+        "🔍 Analyze Repository",
         type="primary",
         use_container_width=True
     )
 
+    st.divider()
+
+    page = st.radio(
+        "NAVIGATION",
+        [
+            "Overview",
+            "Repository Health",
+            "Activity Analytics",
+            "README Analyzer",
+            "Project Structure",
+            "Reports"
+        ]
+    )
+
+    st.divider()
+
+    st.caption("RepoRadar Version 1.0")
+    st.caption("Built with Python + Streamlit")
+
+
+# =========================================================
+# 11. SESSION STATE
+# =========================================================
+
+if "repo_data" not in st.session_state:
+    st.session_state.repo_data = None
+
+
 if analyze_button:
-    if not repo_url.strip():
-        st.warning("Please enter a GitHub repository URL.")
 
-    else:
-        try:
-            with st.spinner("Analyzing repository..."):
-                report = analyze_repository(repo_url.strip())
+    st.session_state.repo_data = None
 
-            st.session_state["repo_report"] = report
-            st.success("Repository analysis completed!")
+    try:
+        owner, repo = parse_repository_url(repository_url)
 
-        except Exception as error:
-            st.error(f"Analysis failed: {error}")
+        with st.spinner("Analyzing repository..."):
+            result = analyze_repository(
+                owner,
+                repo,
+                github_token.strip()
+            )
 
-# Keep report available when navigating
-report = st.session_state.get("repo_report")
+        st.session_state.repo_data = result
 
-if not report:
+        st.success("Analysis completed successfully!")
+
+    except Exception as error:
+        st.error(str(error))
+
+
+# =========================================================
+# 12. HERO SECTION
+# =========================================================
+
+st.markdown("""
+<div class="hero">
+    <div class="hero-title">🛰️ RepoRadar</div>
+    <div class="hero-subtitle">
+        GitHub Repository Health & Documentation Intelligence
+    </div>
+    <p>
+        Analyze repository quality, development activity,
+        contributors, documentation and project structure.
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+
+# =========================================================
+# 13. EMPTY DASHBOARD
+# =========================================================
+
+data = st.session_state.repo_data
+
+if not data:
+
     st.info(
-        "👆 Enter a GitHub repository URL and click "
-        "'Analyze Repository' to get started."
+        "Enter a public GitHub repository URL in the sidebar "
+        "and click Analyze Repository."
     )
 
     st.markdown("### What RepoRadar analyzes")
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Repository Health", "Quality checks")
-    c2.metric("README Analyzer", "Documentation")
-    c3.metric("Activity", "GitHub insights")
+    columns = st.columns(3)
 
-else:
-    st.divider()
+    features = [
+        ("🩺", "Repository Health",
+         "Evaluate important repository quality indicators."),
 
-    st.subheader(f"📦 {report['repository']}")
+        ("📘", "README Intelligence",
+         "Check documentation completeness and suggestions."),
 
-    if report.get("description"):
-        st.caption(report["description"])
+        ("📈", "Activity Analytics",
+         "Inspect commits, contributors and issues."),
 
+        ("💻", "Language Analysis",
+         "Understand programming language distribution."),
+
+        ("🌳", "Project Structure",
+         "Explore files and folders in the repository."),
+
+        ("📄", "Report Generation",
+         "Download JSON and PDF analysis reports.")
+    ]
+
+    for index, (icon, title, description) in enumerate(features):
+
+        with columns[index % 3]:
+
+            st.markdown(
+                f"""
+                <div class="section-card">
+                    <h3>{icon} {title}</h3>
+                    <p class="muted">{description}</p>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
+
+    st.stop()
+
+
+# =========================================================
+# 14. REPOSITORY HEADER
+# =========================================================
+
+metadata = data["metadata"]
+
+st.markdown(
+    f"## 📦 {metadata.get('full_name', 'Repository')}"
+)
+
+st.write(
+    metadata.get("description") or "No repository description provided."
+)
+
+if metadata.get("html_url"):
     st.markdown(
-        f"[↗ Open GitHub Repository]({report['url']})"
+        f"[🌐 Open repository on GitHub]({metadata['html_url']})"
     )
 
-    # ---------------- OVERVIEW ----------------
+st.caption(
+    f"Analysis generated: {data['generated_at']}"
+)
 
-    if page == "Overview":
 
-        st.header("📊 Repository Overview")
+# =========================================================
+# 15. OVERVIEW PAGE
+# =========================================================
 
-        c1, c2, c3, c4 = st.columns(4)
+if page == "Overview":
 
-        c1.metric(
+    st.subheader("Repository Overview")
+
+    col1, col2, col3, col4, col5 = st.columns(5)
+
+    col1.metric(
+    "⭐ Stars",
+    f"{metadata.get('stargazers_count', 0):,}"
+)
+
+    col2.metric(
+        "🍴 Forks",
+        f"{metadata.get('forks_count', 0):,}"
+    )
+
+    col3.metric(
+        "🐛 Open Issues",
+        f"{metadata.get('open_issues_count', 0):,}"
+    )
+
+    col4.metric(
+        "🩺 Health Score",
+        f"{data['health_score']}/100"
+    )
+
+    col5.metric(
+        "📘 README Score",
+        f"{data['readme_score']}/100"
+    )
+
+    st.divider()
+
+    left, right = st.columns(2)
+
+    with left:
+
+        st.markdown("### Overall Repository Score")
+
+        st.metric(
             "Overall Score",
-            f"{report['overall_score']}/100"
-        )
-        c2.metric(
-            "Grade",
-            report["grade"]
-        )
-        c3.metric(
-            "Health Score",
-            f"{report['score']}/100"
-        )
-        c4.metric(
-            "README Score",
-            f"{report['readme_analysis']['score']}/100"
+            f"{data['overall_score']}/100",
+            f"Grade {get_grade(data['overall_score'])}"
         )
 
-        st.progress(report["overall_score"] / 100)
-
-        st.caption(
-            "Overall Score = 60% Repository Health + "
-            "40% README Quality. This is a RepoRadar heuristic."
-        )
-
-        st.divider()
-
-        st.subheader("Repository Statistics")
-
-        c1, c2, c3, c4 = st.columns(4)
-
-        c1.metric("⭐ Stars", report["stars"])
-        c2.metric("🍴 Forks", report["forks"])
-        c3.metric("🐛 Open Issues", report["open_issues"])
-        c4.metric(
-            "👥 Contributors",
-            report["contributors_fetched"]
-        )
-
-        st.divider()
-
-        left, right = st.columns(2)
-
-        with left:
-            st.subheader("💻 Programming Languages")
-
-            if report["languages"]:
-                language_df = pd.DataFrame(
-                    list(report["languages"].items()),
-                    columns=["Language", "Bytes"]
-                ).sort_values("Bytes", ascending=False)
-
-                st.bar_chart(
-                    language_df.set_index("Language")
-                )
-            else:
-                st.info("No languages detected.")
-
-        with right:
-            st.subheader("🐛 Issue Summary")
-
-            issue_df = pd.DataFrame({
-                "Status": ["Open", "Closed"],
-                "Count": [
-                    report["open_issues_analyzed"],
-                    report["closed_issues_analyzed"]
-                ]
-            })
-
-            st.bar_chart(
-                issue_df.set_index("Status")
-            )
-
-        st.divider()
-
-        st.subheader("📈 Recent Activity")
-
-        st.metric(
-            "Commits in Last 30 Days",
-            report["recent_commit_count"]
-        )
-
-        activity_df = pd.DataFrame(
-            list(report["commit_activity"].items()),
-            columns=["Date", "Commits"]
-        )
-
-        activity_df["Date"] = pd.to_datetime(
-            activity_df["Date"]
-        )
-
-        st.line_chart(
-            activity_df.set_index("Date")
-        )
-
-    # ---------------- REPOSITORY HEALTH ----------------
-
-    elif page == "Repository Health":
-
-        st.header("🏥 Repository Health")
-
-        st.metric(
-            "Repository Health Score",
-            f"{report['score']}/100"
-        )
-
-        st.progress(report["score"] / 100)
-
-        st.subheader("Health Checklist")
-
-        for check, passed in report["checks"].items():
-            if passed:
-                st.success(check)
-            else:
-                st.warning(check)
-
-        st.divider()
-
-        st.subheader("Repository Information")
-
-        st.write("Default Branch:", report["default_branch"])
-        st.write("Created:", report["created_at"])
-        st.write("Last Updated:", report["updated_at"])
-        st.write("Archived:", "Yes" if report["archived"] else "No")
-        st.write(
-            "Latest Commit:",
-            report["latest_commit_date"] or "No commits found"
-        )
-
-        st.subheader("Repository Improvement Suggestions")
-
-        suggestions = []
-
-        if not report["readme_present"]:
-            suggestions.append("Add a README file.")
-        if not report["license_present"]:
-            suggestions.append("Add an open-source license.")
-        if not report["tests_present"]:
-            suggestions.append("Add a tests directory.")
-        if not report["description"]:
-            suggestions.append("Add a repository description.")
-        if not report["languages"]:
-            suggestions.append("Add source code files.")
-        if report["archived"]:
-            suggestions.append("This repository is archived.")
-        if report["recent_commit_count"] == 0:
-            suggestions.append("Maintain regular commit activity.")
-
-        if suggestions:
-            for suggestion in suggestions:
-                st.write("🔸", suggestion)
-        else:
-            st.success("All basic repository health checks passed!")
-
-    # ---------------- ACTIVITY ----------------
-
-    elif page == "Activity":
-
-        st.header("📈 Repository Activity")
-
-        c1, c2 = st.columns(2)
-
-        c1.metric(
-            "Commits in Last 30 Days",
-            report["recent_commit_count"]
-        )
-        c2.metric(
-            "Recent Commits Fetched",
-            report["commits_fetched"]
-        )
-
-        activity_df = pd.DataFrame(
-            list(report["commit_activity"].items()),
-            columns=["Date", "Commits"]
-        )
-
-        activity_df["Date"] = pd.to_datetime(
-            activity_df["Date"]
-        )
-
-        st.subheader("Commit Activity - Last 30 Days")
-
-        st.line_chart(
-            activity_df.set_index("Date")
+        st.progress(
+            data["overall_score"] / 100
         )
 
         st.caption(
-            "Activity is calculated from up to 100 recent commits."
+            "60% Repository Health + 40% README Quality"
         )
 
-        st.divider()
+    with right:
 
-        st.subheader("👥 Contributor Analysis")
+        st.markdown("### Repository Information")
 
-        st.metric(
-            "Contributors Found",
-            report["contributors_fetched"]
-        )
+        owner_info = metadata.get("owner") or {}
 
-        if report["contributors"]:
-            contributor_df = pd.DataFrame(
-                report["contributors"]
-            )
-
-            st.bar_chart(
-                contributor_df.head(10).set_index("Username")[
-                    ["Contributions"]
-                ]
-            )
-
-            st.dataframe(
-                contributor_df,
-                use_container_width=True,
-                hide_index=True
-            )
-        else:
-            st.info("No contributors found.")
-
-        st.divider()
-
-        st.subheader("🐛 Issue Analytics")
-
-        c1, c2, c3 = st.columns(3)
-
-        c1.metric(
-            "Open Issues",
-            report["open_issues_analyzed"]
-        )
-        c2.metric(
-            "Closed Issues",
-            report["closed_issues_analyzed"]
-        )
-        c3.metric(
-            "Total Issues",
-            report["issues_analyzed"]
-        )
-
-        issue_df = pd.DataFrame({
-            "Status": ["Open", "Closed"],
-            "Count": [
-                report["open_issues_analyzed"],
-                report["closed_issues_analyzed"]
-            ]
+        st.write({
+            "Owner": owner_info.get("login", "Unknown"),
+            "Default Branch": metadata.get("default_branch"),
+            "Primary Language": metadata.get("language"),
+            "Created": str(metadata.get("created_at", ""))[:10],
+            "Last Updated": str(metadata.get("updated_at", ""))[:10],
+            "Archived": metadata.get("archived", False)
         })
 
-        st.bar_chart(issue_df.set_index("Status"))
+    st.divider()
 
-    # ---------------- README ANALYZER ----------------
+    st.markdown("### Programming Language Distribution")
 
-    elif page == "README Analyzer":
+    languages = data["languages"]
 
-        st.header("📘 README Quality Analyzer")
+    if languages:
 
-        readme = report["readme_analysis"]
+        language_df = pd.DataFrame([
+            {
+                "Language": name,
+                "Bytes": size
+            }
+            for name, size in languages.items()
+        ])
 
-        c1, c2 = st.columns(2)
-
-        c1.metric(
-            "README Score",
-            f"{readme['score']}/100"
+        fig = px.pie(
+            language_df,
+            names="Language",
+            values="Bytes",
+            hole=0.5,
+            title="Languages used in this repository"
         )
-        c2.metric(
-            "Word Count",
-            readme["word_count"]
+
+        st.plotly_chart(
+            fig,
+            use_container_width=True
         )
 
-        st.progress(readme["score"] / 100)
+    else:
+        st.info("No language statistics are available.")
 
-        if readme["exists"]:
 
-            st.subheader("README Quality Checklist")
+# =========================================================
+# 16. REPOSITORY HEALTH PAGE
+# =========================================================
 
-            for check, passed in readme["checks"].items():
-                if passed:
-                    st.success(check)
-                else:
-                    st.warning(check)
+elif page == "Repository Health":
 
-            st.divider()
+    st.subheader("🩺 Repository Health Analysis")
 
-            st.subheader("README Sections")
+    st.metric(
+        "Repository Health Score",
+        f"{data['health_score']}/100",
+        f"Grade {get_grade(data['health_score'])}"
+    )
 
-            if readme["sections"]:
-                for section in readme["sections"]:
-                    st.write("📌", section)
-            else:
-                st.info("No Markdown headings detected.")
+    st.progress(
+        data["health_score"] / 100
+    )
 
-            st.divider()
+    st.markdown("### Health Checklist")
 
-            st.subheader("Improvement Suggestions")
+    for item in data["health_checks"]:
 
-            if readme["suggestions"]:
-                for suggestion in readme["suggestions"]:
-                    st.write("🔸", suggestion)
-            else:
-                st.success("README passed all quality checks!")
+        if item["Passed"]:
+
+            st.success(
+                f"✅ {item['Check']} — {item['Suggestion']}"
+            )
 
         else:
-            st.warning("This repository does not have a readable README.")
 
-    # ---------------- PROJECT STRUCTURE ----------------
+            st.warning(
+                f"⚠️ {item['Check']} — {item['Suggestion']}"
+            )
 
-    elif page == "Project Structure":
+    st.caption(
+        "RepoRadar health score is a heuristic, not an official GitHub rating."
+    )
 
-        st.header("🧭 Project Structure Analysis")
 
-        structure = report["project_structure"]
+# =========================================================
+# 17. ACTIVITY ANALYTICS PAGE
+# =========================================================
 
-        c1, c2 = st.columns(2)
+elif page == "Activity Analytics":
 
-        c1.metric("Files Detected", structure["file_count"])
-        c2.metric(
-            "Directories Detected",
-            structure["directory_count"]
+    st.subheader("📈 Development Activity")
+
+    col1, col2, col3 = st.columns(3)
+
+    col1.metric(
+        "Recent Commits (sample)",
+        data["recent_commits"]
+    )
+
+    col2.metric(
+        "Contributors Returned",
+        len(data["contributors"])
+    )
+
+    col3.metric(
+        "Open Issues Returned",
+        len(data["issues"])
+    )
+
+    st.caption(
+        "Commit activity is counted from at most the latest 100 "
+        "commits returned by GitHub."
+    )
+
+    st.divider()
+
+    st.markdown("### Contributor Analysis")
+
+    contributors = data["contributors"]
+
+    if contributors:
+
+        contributor_df = pd.DataFrame([
+            {
+                "Contributor": item.get("login", "Unknown"),
+                "Contributions": item.get("contributions", 0)
+            }
+            for item in contributors
+        ])
+
+        fig = px.bar(
+            contributor_df,
+            x="Contributor",
+            y="Contributions",
+            title="Contributions by contributor"
         )
 
-        st.divider()
+        st.plotly_chart(
+            fig,
+            use_container_width=True
+        )
 
-        st.subheader("Detected Project Types")
+        st.dataframe(
+            contributor_df,
+            use_container_width=True,
+            hide_index=True
+        )
 
-        project_types = structure["detected_project_types"]
+    else:
+        st.info("No contributor information returned.")
 
-        if project_types:
-            for project_type in project_types:
-                st.success(project_type)
+    st.divider()
+
+    st.markdown("### Open Issues")
+
+    issues = data["issues"]
+
+    if issues:
+
+        issue_df = pd.DataFrame([
+            {
+                "Issue Number": issue.get("number"),
+                "Title": issue.get("title"),
+                "Author": (issue.get("user") or {}).get("login"),
+                "Created": str(issue.get("created_at", ""))[:10],
+                "URL": issue.get("html_url")
+            }
+            for issue in issues
+        ])
+
+        st.dataframe(
+            issue_df,
+            use_container_width=True,
+            hide_index=True,
+            column_config={
+                "URL": st.column_config.LinkColumn("Issue Link")
+            }
+        )
+
+    else:
+        st.success("No open issues were returned.")
+
+
+# =========================================================
+# 18. README ANALYZER PAGE
+# =========================================================
+
+elif page == "README Analyzer":
+
+    st.subheader("📘 README Documentation Intelligence")
+
+    st.metric(
+        "README Quality Score",
+        f"{data['readme_score']}/100",
+        f"Grade {get_grade(data['readme_score'])}"
+    )
+
+    st.progress(
+        data["readme_score"] / 100
+    )
+
+    st.markdown("### Documentation Checklist")
+
+    for item in data["readme_checks"]:
+
+        if item["Passed"]:
+
+            st.success(
+                f"✅ {item['Check']} — {item['Suggestion']}"
+            )
+
         else:
-            st.info("No project manifest detected.")
 
-        st.divider()
+            st.warning(
+                f"⚠️ {item['Check']} — {item['Suggestion']}"
+            )
 
-        st.subheader("Important Project Files")
+    st.divider()
 
-        for label, found in structure["important_files"].items():
-            if found:
-                st.success(label)
+    st.markdown("### Improvement Suggestions")
+
+    if data["readme_suggestions"]:
+
+        for suggestion in data["readme_suggestions"]:
+            st.write(f"• {suggestion}")
+
+    else:
+        st.success("All README checks passed.")
+
+    with st.expander("View complete README"):
+
+        if data["readme_text"]:
+            st.code(
+                data["readme_text"],
+                language="markdown"
+            )
+        else:
+            st.info("README file was not found.")
+
+
+# =========================================================
+# 19. PROJECT STRUCTURE PAGE
+# =========================================================
+
+elif page == "Project Structure":
+
+    st.subheader("🌳 Repository Project Structure")
+
+    tree = data["tree"]
+
+    st.metric(
+        "Files and Folders Returned",
+        len(tree)
+    )
+
+    if data["tree_truncated"]:
+
+        st.warning(
+            "GitHub marked this project tree as truncated. "
+            "The displayed structure may be incomplete."
+        )
+
+    if tree:
+
+        paths = []
+
+        for item in tree[:250]:
+
+            path = item.get("path", "")
+
+            if item.get("type") == "tree":
+                paths.append("📁 " + path + "/")
             else:
-                st.warning(label)
+                paths.append("📄 " + path)
 
-        st.divider()
-
-        st.subheader("Repository Folders")
-
-        for folder in structure["directories"]:
-            st.write("📁", folder)
-
-        st.divider()
-
-        st.subheader("Repository Files")
-
-        st.code("\n".join(structure["files"]))
-
-        if structure["truncated"]:
-            st.caption("Showing the first 100 files.")
-
-    # ---------------- REPORTS ----------------
-
-    elif page == "Reports":
-
-        st.header("📥 Download Reports")
-
-        st.write(
-            "Download your repository analysis in JSON "
-            "or PDF format."
+        st.code(
+            "\n".join(paths),
+            language="text"
         )
 
-        json_report = json.dumps(
-            report,
-            indent=4
-        )
+        extension_counts = {}
 
-        pdf_data = create_pdf_report(report)
+        for item in tree:
 
-        c1, c2 = st.columns(2)
+            if item.get("type") != "blob":
+                continue
 
-        with c1:
-            st.download_button(
-                "⬇️ Download JSON Report",
-                data=json_report,
-                file_name="reporadar_report.json",
-                mime="application/json",
+            filename = item.get("path", "")
+            basename = filename.split("/")[-1]
+
+            if "." in basename:
+                extension = "." + basename.rsplit(".", 1)[-1]
+            else:
+                extension = "No extension"
+
+            extension_counts[extension] = (
+                extension_counts.get(extension, 0) + 1
+            )
+
+        if extension_counts:
+
+            extension_df = pd.DataFrame([
+                {
+                    "File Type": ext,
+                    "Count": count
+                }
+                for ext, count in extension_counts.items()
+            ])
+
+            extension_df = extension_df.sort_values(
+                "Count",
+                ascending=False
+            ).head(15)
+
+            fig = px.bar(
+                extension_df,
+                x="File Type",
+                y="Count",
+                title="File Type Distribution"
+            )
+
+            st.plotly_chart(
+                fig,
                 use_container_width=True
             )
 
-        with c2:
-            st.download_button(
-                "⬇️ Download PDF Report",
-                data=pdf_data,
-                file_name="reporadar_report.pdf",
-                mime="application/pdf",
-                use_container_width=True
-            )
+    else:
+        st.info("No project structure data returned.")
 
-        st.divider()
 
-        st.subheader("Report Summary")
+# =========================================================
+# 20. REPORT GENERATION PAGE
+# =========================================================
 
-        st.write("Repository:", report["repository"])
-        st.write("Overall Score:", report["overall_score"])
-        st.write("Grade:", report["grade"])
-        st.write("Health Score:", report["score"])
-        st.write(
-            "README Score:",
-            report["readme_analysis"]["score"]
+elif page == "Reports":
+
+    st.subheader("📄 Repository Analysis Reports")
+
+    st.markdown("### Score Summary")
+
+    st.write({
+        "Repository": metadata.get("full_name"),
+        "Overall Score": data["overall_score"],
+        "Grade": get_grade(data["overall_score"]),
+        "Health Score": data["health_score"],
+        "README Score": data["readme_score"]
+    })
+
+    export_data = {
+        "repository": {
+            "name": metadata.get("full_name"),
+            "url": metadata.get("html_url"),
+            "description": metadata.get("description"),
+            "stars": metadata.get("stargazers_count"),
+            "forks": metadata.get("forks_count"),
+            "open_issues": metadata.get("open_issues_count"),
+            "primary_language": metadata.get("language"),
+            "default_branch": metadata.get("default_branch")
+        },
+        "scores": {
+            "overall": data["overall_score"],
+            "grade": get_grade(data["overall_score"]),
+            "health": data["health_score"],
+            "readme": data["readme_score"]
+        },
+        "health_checks": data["health_checks"],
+        "readme_checks": data["readme_checks"],
+        "readme_suggestions": data["readme_suggestions"],
+        "languages": data["languages"],
+        "activity": {
+            "recent_commits_in_latest_100_sample":
+                data["recent_commits"],
+            "commit_sample_size": len(data["commits"])
+        },
+        "contributors": [
+            {
+                "login": item.get("login"),
+                "contributions": item.get("contributions")
+            }
+            for item in data["contributors"]
+        ],
+        "issues": [
+            {
+                "number": item.get("number"),
+                "title": item.get("title"),
+                "url": item.get("html_url")
+            }
+            for item in data["issues"]
+        ],
+        "project_tree": {
+            "paths": [
+                item.get("path")
+                for item in data["tree"][:250]
+            ],
+            "truncated": data["tree_truncated"]
+        },
+        "generated_at": data["generated_at"]
+    }
+
+    json_content = json.dumps(
+        export_data,
+        indent=4,
+        ensure_ascii=False
+    )
+
+    st.download_button(
+        "⬇️ Download JSON Report",
+        data=json_content,
+        file_name="reporadar_report.json",
+        mime="application/json",
+        use_container_width=True
+    )
+
+    try:
+
+        pdf_content = create_pdf_report(data)
+
+        st.download_button(
+            "⬇️ Download PDF Report",
+            data=pdf_content,
+            file_name="reporadar_report.pdf",
+            mime="application/pdf",
+            use_container_width=True
         )
+
+    except Exception as error:
+
+        st.warning(
+            f"PDF report unavailable: {error}"
+        )
+
+
+# =========================================================
+# 21. FOOTER
+# =========================================================
 
 st.divider()
 
-st.caption(
-    "RepoRadar | Python | Streamlit | Pandas | GitHub REST API"
-)
+st.markdown("""
+<div style="text-align:center; color:#64748b; padding:15px;">
+    <b>🛰️ RepoRadar</b><br>
+    GitHub Repository Health & Documentation Intelligence<br>
+    <span style="font-size:12px;">
+        Built using Python, Streamlit and GitHub REST API
+    </span>
+</div>
+""", unsafe_allow_html=True)
